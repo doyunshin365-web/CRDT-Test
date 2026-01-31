@@ -1,0 +1,21 @@
+{
+  "name": "crdt_test",
+  "version": "1.0.0",
+  "main": "script.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "ws": "^8.19.0",
+    "y-websocket": "^1.5.0",
+    "yjs": "^13.6.29"
+  },
+  "devDependencies": {
+    "vite": "^6.4.1"
+  }
+}
