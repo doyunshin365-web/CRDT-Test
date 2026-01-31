@@ -18,4 +18,3 @@ server.listen(port, () => {
     console.log(`CRDT Server running on port ${port}`)
 })
 
-
