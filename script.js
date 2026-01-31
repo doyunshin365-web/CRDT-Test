@@ -11,13 +11,22 @@ const wsHost = window.location.host
 const provider = new WebsocketProvider(`${wsProtocol}//${wsHost}/ws`, 'my-room', ydoc)
 const ytext = ydoc.getText('test-doc')
 
+// --- STATE ---
+let lastSyncedContent = '' // The state of the DOM as we last verified it against Yjs
+let isComposing = false
+let isApplyingRemoteChange = false
+let relCursor = null
+
 provider.on('status', event => {
     status.innerText = `Status: ${event.status}`
 })
 
 // --- HELPERS ---
 
-const getNormalizedText = () => editor.textContent || ''
+const getNormalizedText = () => {
+    // Browsers often add a trailing newline to contenteditable; we strip it for consistency
+    return (editor.textContent || '')
+}
 
 const getCursorIndex = (element) => {
     const selection = window.getSelection()
@@ -55,44 +64,23 @@ const setCursorIndex = (element, index) => {
     }
 }
 
-// --- STATE & SYNC ---
-
-let isComposing = false
-let isApplyingRemoteChange = false
-let relCursor = null
-
-const updateRelCursor = () => {
-    if (document.activeElement === editor && !isComposing) {
-        const index = getCursorIndex(editor)
-        relCursor = Y.createRelativePositionFromTypeIndex(ytext, index)
-    }
-}
-
-document.addEventListener('selectionchange', updateRelCursor)
-
-editor.addEventListener('compositionstart', () => {
-    isComposing = true
-})
-
-editor.addEventListener('compositionend', (e) => {
-    isComposing = false
-    // Force immediate sync after composition finishes
-    syncLocalToRemote()
-})
-
-ytext.observe(event => {
-    if (event.transaction.local) return
-
-    // CRITICAL: Prevent updating DOM while user is composing (typing KR characters)
-    // This is the primary fix for the "doubling" bug.
+const updateDOMFromYjs = () => {
     if (isComposing) return
 
     isApplyingRemoteChange = true
-
     const newText = ytext.toString()
-    if (getNormalizedText() !== newText) {
-        editor.textContent = newText
 
+    if (getNormalizedText() !== newText) {
+        // Save relative cursor position before update
+        if (document.activeElement === editor) {
+            const index = getCursorIndex(editor)
+            relCursor = Y.createRelativePositionFromTypeIndex(ytext, index)
+        }
+
+        editor.textContent = newText
+        lastSyncedContent = newText
+
+        // Restore cursor
         if (relCursor && document.activeElement === editor) {
             const absStart = Y.createAbsolutePositionFromRelativePosition(relCursor, ydoc)
             if (absStart) {
@@ -100,33 +88,59 @@ ytext.observe(event => {
             }
         }
     }
-
     isApplyingRemoteChange = false
-})
+}
 
 const syncLocalToRemote = () => {
-    if (isApplyingRemoteChange || isComposing) return
+    if (isApplyingRemoteChange) return
 
     const localText = getNormalizedText()
-    const remoteText = ytext.toString()
-
-    if (localText !== remoteText) {
-        const changes = diff(remoteText, localText)
-        let index = 0
+    // CRITICAL: We diff against the last state the DOM was in sync with.
+    // This ignores any remote changes that ytext has but the DOM doesn't yet.
+    if (localText !== lastSyncedContent) {
+        const changes = diff(lastSyncedContent, localText)
 
         ydoc.transact(() => {
+            let index = 0
             changes.forEach(([type, value]) => {
-                if (type === 0) { // Equal
+                if (type === 0) {
                     index += value.length
-                } else if (type === -1) { // Delete
+                } else if (type === -1) {
                     ytext.delete(index, value.length)
-                } else if (type === 1) { // Insert
+                } else if (type === 1) {
                     ytext.insert(index, value)
                     index += value.length
                 }
             })
         })
+        lastSyncedContent = localText
     }
 }
 
-editor.addEventListener('input', syncLocalToRemote)
+// --- EVENTS ---
+
+editor.addEventListener('compositionstart', () => {
+    isComposing = true
+})
+
+editor.addEventListener('compositionend', () => {
+    isComposing = false
+    syncLocalToRemote()
+    updateDOMFromYjs()
+})
+
+editor.addEventListener('input', () => {
+    if (isComposing) return
+    syncLocalToRemote()
+})
+
+ytext.observe(event => {
+    if (event.transaction.local) return
+    // If composing, we skip DOM update to protect IME state.
+    // The next compositionend will handle merging.
+    updateDOMFromYjs()
+})
+
+// Initialize state
+lastSyncedContent = ytext.toString()
+editor.textContent = lastSyncedContent
