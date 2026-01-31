@@ -1,22 +1,13 @@
+run = "npm run dev"
 modules = ["nodejs-20"]
 
 [[ports]]
-localPort = 1234
-externalPort = 3000
-
-[[ports]]
-localPort = 3001
-externalPort = 3001
-
-[[ports]]
-localPort = 5000
-
-[[ports]]
 localPort = 5173
-externalPort = 5000
+externalPort = 80
 
-[agent]
-expertMode = true
+[[ports]]
+localPort = 1234
+externalPort = 1234
 
 [workflows]
 runButton = "Project"
@@ -37,7 +28,7 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "npm run dev"
-waitForPort = 5000
+waitForPort = 5173
 
 [workflows.workflow.metadata]
 outputType = "webview"
