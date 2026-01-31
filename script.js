@@ -13,45 +13,62 @@ provider.on('status', event => {
     status.innerText = `Status: ${event.status}`
 })
 
+// Helper to get absolute cursor position in contenteditable
+const getCursorIndex = (element) => {
+    const selection = window.getSelection()
+    if (selection.rangeCount === 0) return 0
+    const range = selection.getRangeAt(0)
+    const preRange = range.cloneRange()
+    preRange.selectNodeContents(element)
+    preRange.setEnd(range.startContainer, range.startOffset)
+    return preRange.toString().length
+}
+
+// Helper to set absolute cursor position
+const setCursorIndex = (element, index) => {
+    const selection = window.getSelection()
+    const range = document.createRange()
+    let charCount = 0
+    let nodeStack = [element]
+
+    while (nodeStack.length > 0) {
+        let node = nodeStack.pop()
+        if (node.nodeType === 3) {
+            let nextCharCount = charCount + node.length
+            if (index >= charCount && index <= nextCharCount) {
+                range.setStart(node, index - charCount)
+                range.collapse(true)
+                selection.removeAllRanges()
+                selection.addRange(range)
+                return
+            }
+            charCount = nextCharCount
+        } else {
+            for (let i = node.childNodes.length - 1; i >= 0; i--) {
+                nodeStack.push(node.childNodes[i])
+            }
+        }
+    }
+}
+
 // Synchronization: Yjs -> DOM
 ytext.observe(event => {
-    // Only apply remote changes to avoid infinite loop and cursor issues
     if (event.transaction.local) return
 
     const selection = window.getSelection()
     let relStart = null
-    let relEnd = null
 
-    // 1. Save cursor position as Relative Position
     if (selection.rangeCount > 0 && document.activeElement === editor) {
-        const range = selection.getRangeAt(0)
-        const offset = range.startOffset
-        relStart = Y.createRelativePositionFromTypeIndex(ytext, offset)
-        relEnd = Y.createRelativePositionFromTypeIndex(ytext, range.endOffset)
+        const index = getCursorIndex(editor)
+        relStart = Y.createRelativePositionFromTypeIndex(ytext, index)
     }
 
-    // 2. Update content
     editor.innerText = ytext.toString()
 
-    // 3. Restore cursor position using Relative Position
     if (relStart && document.activeElement === editor) {
         const absStart = Y.createAbsolutePositionFromRelativePosition(relStart, ydoc)
-        const absEnd = Y.createAbsolutePositionFromRelativePosition(relEnd, ydoc)
-
-        if (absStart && absEnd) {
-            const range = document.createRange()
-            const textNode = editor.firstChild || editor
-            try {
-                const start = Math.min(absStart.index, textNode.length || 0)
-                const end = Math.min(absEnd.index, textNode.length || 0)
-
-                range.setStart(textNode, start)
-                range.setEnd(textNode, end)
-                selection.removeAllRanges()
-                selection.addRange(range)
-            } catch (e) {
-                console.warn('Failed to restore cursor', e)
-            }
+        if (absStart) {
+            setCursorIndex(editor, absStart.index)
         }
     }
 })
@@ -79,6 +96,7 @@ editor.addEventListener('input', () => {
         })
     }
 })
+
 
 
 
