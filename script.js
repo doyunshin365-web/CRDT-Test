@@ -6,7 +6,9 @@ const editor = document.getElementById('editor')
 const status = document.getElementById('status')
 
 const ydoc = new Y.Doc()
-const provider = new WebsocketProvider('ws://localhost:1234', 'my-room', ydoc)
+const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+const wsHost = window.location.host
+const provider = new WebsocketProvider(`${wsProtocol}//${wsHost}/ws`, 'my-room', ydoc)
 const ytext = ydoc.getText('test-doc')
 
 provider.on('status', event => {
