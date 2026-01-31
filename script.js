@@ -53,30 +53,50 @@ const setCursorIndex = (element, index) => {
     }
 }
 
+// --- CURSOR TRACKING ---
+let relCursor = null
+
+const updateRelCursor = () => {
+    if (document.activeElement === editor) {
+        const index = getCursorIndex(editor)
+        // 왼쪽 캐릭터와의 거리를 유지하도록 설정 (데이터 삽입 시 뒤로 밀림)
+        relCursor = Y.createRelativePositionFromTypeIndex(ytext, index)
+    }
+}
+
+// 사용자가 클릭하거나 타이핑할 때마다 상대 위치 기록
+document.addEventListener('selectionchange', updateRelCursor)
+
+let isApplyingRemoteChange = false
+
 // Synchronization: Yjs -> DOM
 ytext.observe(event => {
     if (event.transaction.local) return
 
-    const selection = window.getSelection()
-    let relStart = null
+    isApplyingRemoteChange = true
 
-    if (selection.rangeCount > 0 && document.activeElement === editor) {
-        const index = getCursorIndex(editor)
-        relStart = Y.createRelativePositionFromTypeIndex(ytext, index)
-    }
+    // 중요: 여기서 updateRelCursor()를 호출하면 안 됨! 
+    // 이미 selectionchange에서 이전 상태의 상대 위치를 잘 보관하고 있음.
 
-    editor.innerText = ytext.toString()
+    const newText = ytext.toString()
+    if (editor.innerText !== newText) {
+        editor.innerText = newText
 
-    if (relStart && document.activeElement === editor) {
-        const absStart = Y.createAbsolutePositionFromRelativePosition(relStart, ydoc)
-        if (absStart) {
-            setCursorIndex(editor, absStart.index)
+        if (relCursor && document.activeElement === editor) {
+            const absStart = Y.createAbsolutePositionFromRelativePosition(relCursor, ydoc)
+            if (absStart) {
+                setCursorIndex(editor, absStart.index)
+            }
         }
     }
+
+    isApplyingRemoteChange = false
 })
 
 // Synchronization: DOM -> Yjs
 editor.addEventListener('input', () => {
+    if (isApplyingRemoteChange) return
+
     const localText = editor.innerText
     const remoteText = ytext.toString()
 
@@ -98,6 +118,8 @@ editor.addEventListener('input', () => {
         })
     }
 })
+
+
 
 
 
