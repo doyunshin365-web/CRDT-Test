@@ -15,7 +15,10 @@ provider.on('status', event => {
     status.innerText = `Status: ${event.status}`
 })
 
-// Helper to get absolute cursor position in contenteditable
+// Helper to get normalized text (textContent is more stable for CRDT)
+const getNormalizedText = () => editor.textContent || ''
+
+// Helper to get absolute cursor position
 const getCursorIndex = (element) => {
     const selection = window.getSelection()
     if (selection.rangeCount === 0) return 0
@@ -53,34 +56,42 @@ const setCursorIndex = (element, index) => {
     }
 }
 
-// --- CURSOR TRACKING ---
+// --- STATE ---
 let relCursor = null
+let isComposing = false
+let isApplyingRemoteChange = false
 
 const updateRelCursor = () => {
-    if (document.activeElement === editor) {
+    if (document.activeElement === editor && !isComposing) {
         const index = getCursorIndex(editor)
-        // 왼쪽 캐릭터와의 거리를 유지하도록 설정 (데이터 삽입 시 뒤로 밀림)
         relCursor = Y.createRelativePositionFromTypeIndex(ytext, index)
     }
 }
 
-// 사용자가 클릭하거나 타이핑할 때마다 상대 위치 기록
 document.addEventListener('selectionchange', updateRelCursor)
 
-let isApplyingRemoteChange = false
+editor.addEventListener('compositionstart', () => {
+    isComposing = true
+})
+
+editor.addEventListener('compositionend', () => {
+    isComposing = false
+    // Sync final state after composition ends
+    syncLocalToRemote()
+})
 
 // Synchronization: Yjs -> DOM
 ytext.observe(event => {
     if (event.transaction.local) return
 
+    // IME 작업 중일 때는 원격 변경 사항을 즉시 반영하지 않음 (글자 뒤섞임 및 가나다 중복 방지)
+    if (isComposing) return
+
     isApplyingRemoteChange = true
 
-    // 중요: 여기서 updateRelCursor()를 호출하면 안 됨! 
-    // 이미 selectionchange에서 이전 상태의 상대 위치를 잘 보관하고 있음.
-
     const newText = ytext.toString()
-    if (editor.innerText !== newText) {
-        editor.innerText = newText
+    if (getNormalizedText() !== newText) {
+        editor.textContent = newText
 
         if (relCursor && document.activeElement === editor) {
             const absStart = Y.createAbsolutePositionFromRelativePosition(relCursor, ydoc)
@@ -93,11 +104,10 @@ ytext.observe(event => {
     isApplyingRemoteChange = false
 })
 
-// Synchronization: DOM -> Yjs
-editor.addEventListener('input', () => {
-    if (isApplyingRemoteChange) return
+const syncLocalToRemote = () => {
+    if (isApplyingRemoteChange || isComposing) return
 
-    const localText = editor.innerText
+    const localText = getNormalizedText()
     const remoteText = ytext.toString()
 
     if (localText !== remoteText) {
@@ -117,7 +127,11 @@ editor.addEventListener('input', () => {
             })
         })
     }
-})
+}
+
+// Synchronization: DOM -> Yjs
+editor.addEventListener('input', syncLocalToRemote)
+
 
 
 
