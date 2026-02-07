@@ -14,14 +14,25 @@ const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
 const wsHost = window.location.host
 const provider = new WebsocketProvider(`${wsProtocol}//${wsHost}/ws`, 'my-room', ydoc)
 const ytext = ydoc.getText('test-doc')
+const yLog = ydoc.getArray('shared-log') // 💡 실시간 공유 로그를 위한 Y.Array
+
+// --- AWARENESS & IDENTITY ---
+const awareness = provider.awareness
+const userName = prompt('아이디를 입력하세요:') || `User-${Math.floor(Math.random() * 1000)}`
+const userColor = `hsl(${Math.floor(Math.random() * 360)}, 70%, 50%)`
+
+awareness.setLocalStateField('user', {
+    name: userName,
+    color: userColor
+})
 
 // --- STATE ---
 let lastSyncedContent = ''
 let isComposing = false
-// 💡 뮤텍스: 로컬 변경 중일 때 리모트 패치를 막고, 리모트 패치 중일 때 로컬 싱크를 막음
 let isLocalUpdate = false
 let isRemoteUpdate = false
 let savedRelativeCursor = null
+const MAX_LOGS = 100
 
 provider.on('status', event => {
     status.innerText = `Status: ${event.status}`
@@ -29,7 +40,6 @@ provider.on('status', event => {
 
 // --- HELPERS ---
 
-// 텍스트 노드 사이를 탐색하며 정확한 위치를 찾는 함수
 const getCursorIndex = (element) => {
     const selection = window.getSelection()
     if (!selection || selection.rangeCount === 0) return 0
@@ -49,18 +59,143 @@ const getCursorIndex = (element) => {
     return index
 }
 
-// 상대적 커서 위치를 현재 DOM 상태를 기반으로 업데이트
 const updateRelativeCursor = () => {
-    if (document.activeElement === editor && !isRemoteUpdate && !isComposing) {
+    if (document.activeElement === editor && !isRemoteUpdate) {
         const index = getCursorIndex(editor)
         try {
-            // assoc = -1: 왼쪽 문자에 달라붙게 하여 타이핑 시 자연스럽게 이동하도록 함
             savedRelativeCursor = Y.createRelativePositionFromTypeIndex(ytext, index, -1)
+            awareness.setLocalStateField('cursor', {
+                index: index,
+                updatedAt: Date.now()
+            })
         } catch (e) {
             console.error("Failed to save relative cursor", e)
         }
     }
 }
+
+const getCoordinatesAtIndex = (element, index) => {
+    const range = document.createRange()
+    const selection = window.getSelection()
+    let charCount = 0
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false)
+    let found = false
+
+    while (walker.nextNode()) {
+        const node = walker.currentNode
+        const nodeLength = node.textContent.length
+        if (charCount + nodeLength >= index) {
+            range.setStart(node, Math.max(0, index - charCount))
+            range.collapse(true)
+            found = true
+            break
+        }
+        charCount += nodeLength
+    }
+
+    if (!found) {
+        range.selectNodeContents(element)
+        range.collapse(false)
+    }
+
+    const rects = range.getClientRects()
+    if (rects.length > 0) {
+        return {
+            top: rects[0].top + window.scrollY,
+            left: rects[0].left + window.scrollX
+        }
+    }
+    return null
+}
+
+const awarenessContainer = document.getElementById('awareness-container')
+
+const renderRemoteCursors = () => {
+    awarenessContainer.innerHTML = ''
+    const states = awareness.getStates()
+
+    states.forEach((state, clientID) => {
+        if (clientID === ydoc.clientID) return
+        if (!state.user || !state.cursor) return
+
+        const coords = getCoordinatesAtIndex(editor, state.cursor.index)
+        if (coords) {
+            const cursorDiv = document.createElement('div')
+            cursorDiv.className = 'remote-cursor'
+            cursorDiv.style.left = `${coords.left}px`
+            cursorDiv.style.top = `${coords.top}px`
+            cursorDiv.style.backgroundColor = state.user.color
+
+            const labelDiv = document.createElement('div')
+            labelDiv.className = 'remote-label'
+            labelDiv.style.backgroundColor = state.user.color
+            labelDiv.textContent = state.user.name
+
+            cursorDiv.appendChild(labelDiv)
+            awarenessContainer.appendChild(cursorDiv)
+        }
+    })
+}
+
+awareness.on('change', renderRemoteCursors)
+window.addEventListener('resize', renderRemoteCursors)
+
+// --- SHARED LOGGING ---
+const logContent = document.getElementById('log-content')
+const logToggle = document.getElementById('log-toggle')
+const logHeader = document.getElementById('log-header')
+
+logHeader.addEventListener('click', () => {
+    const isVisible = logContent.style.display === 'block'
+    logContent.style.display = isVisible ? 'none' : 'block'
+    logToggle.innerText = isVisible ? '로그 펼치기' : '로그 접기'
+})
+
+const renderLogs = () => {
+    if (!logContent) return
+    const logs = yLog.toArray().slice().reverse() // 최신순
+    logContent.innerHTML = logs.map(log => `
+        <div class="log-entry">
+            <span class="log-time">[${log.time}]</span>
+            <span class="log-user" style="color: ${log.color}">${log.user}</span>
+            <span class="log-action ${log.actionClass}">${log.action}</span>
+        </div>
+    `).join('')
+}
+
+yLog.observe(() => {
+    renderLogs()
+})
+
+const addSharedLogEntry = (action, text) => {
+    const now = new Date()
+    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`
+
+    let actionText = ''
+    let actionClass = ''
+    if (action === 'insert') {
+        actionText = `➕ 추가: "${text}"`
+        actionClass = 'insert'
+    } else if (action === 'delete') {
+        actionText = `➖ 삭제: ${text.length}자`
+        actionClass = 'delete'
+    }
+
+    ydoc.transact(() => {
+        yLog.push([{
+            user: userName,
+            color: userColor,
+            time: timeStr,
+            action: actionText,
+            actionClass: actionClass
+        }])
+        if (yLog.length > MAX_LOGS) {
+            yLog.delete(0, yLog.length - MAX_LOGS)
+        }
+    })
+}
+
+// --- DOM & SYNC ---
 
 const setCursorIndex = (element, index) => {
     const range = document.createRange()
@@ -73,7 +208,6 @@ const setCursorIndex = (element, index) => {
         const node = walker.currentNode
         const nodeLength = node.textContent.length
         if (charCount + nodeLength >= index) {
-            // 인덱스 0인 경우 빈 텍스트 노드에서도 동작하도록 함
             range.setStart(node, Math.max(0, index - charCount))
             range.collapse(true)
             found = true
@@ -91,121 +225,89 @@ const setCursorIndex = (element, index) => {
     selection.addRange(range)
 }
 
-// Yjs 변경사항을 DOM에 반영 (리모트 변경 시 실행)
 const updateDOMFromYjs = () => {
-    // 내가 입력 중이거나(한글 조합 중), 내가 발생시킨 변경사항이면 무시
+    // 💡 한글 조합 중에도 업데이트는 하되, DOM 수정만 syncLocalToRemote와 조율
     if (isComposing || isLocalUpdate) return
-
     const newText = ytext.toString()
     const currentText = editor.textContent
 
     if (currentText !== newText) {
-        isRemoteUpdate = true // 🔒 락 걸기
-
-        // 💡 중요: 커서 위치는 관찰자(observe)가 불리기 전이나 
-        // 외부에서 이미 savedRelativeCursor에 업데이트되어 있어야 함.
-        // 여기(업데이트 시점)에서 계산하면 이미 ytext가 바뀐 상태라 늦음.
-
-        // 2. 내용 업데이트
+        isRemoteUpdate = true
         editor.textContent = newText
         lastSyncedContent = newText
 
-        // 3. 커서 복원
         if (savedRelativeCursor && document.activeElement === editor) {
             try {
                 const absPos = Y.createAbsolutePositionFromRelativePosition(savedRelativeCursor, ydoc)
-                if (absPos) {
-                    setCursorIndex(editor, absPos.index)
-                }
+                if (absPos) setCursorIndex(editor, absPos.index)
             } catch (e) {
                 console.error("Cursor restore failed", e)
             }
         }
-
-        isRemoteUpdate = false // 🔓 락 해제
+        isRemoteUpdate = false
     }
 }
 
-// 로컬 변경사항을 Yjs로 전송
 const syncLocalToRemote = () => {
-    // 리모트 변경사항을 DOM에 바르는 중이면 로컬 싱크 중단 (무한루프 방지)
     if (isRemoteUpdate) return
-
-    const localText = editor.innerText
-
-    // 💡 중요: innerText는 브라우저마다 줄바꿈 처리가 다를 수 있음. 
-    // 여기서는 동기화 일관성을 위해 획득한 텍스트를 기반으로 diff를 수행함.
-
-    // 변경된 게 없으면 패스
+    const localText = editor.textContent
     if (localText === lastSyncedContent) return
 
-    isLocalUpdate = true // 🔒 로컬 업데이트 시작임을 표시
-
+    isLocalUpdate = true
     const changes = diff(lastSyncedContent, localText)
 
     ydoc.transact(() => {
         let index = 0
         changes.forEach(([type, value]) => {
-            if (type === 0) { // Equal
+            if (type === 0) {
                 index += value.length
-            } else if (type === -1) { // Delete
+            } else if (type === -1) {
                 ytext.delete(index, value.length)
-            } else if (type === 1) { // Insert
+                addSharedLogEntry('delete', ' '.repeat(value.length))
+            } else if (type === 1) {
                 ytext.insert(index, value)
+                addSharedLogEntry('insert', value)
                 index += value.length
             }
         })
-    }, 'local-input') // origin을 명시
+    }, 'local-input')
 
+    updateRelativeCursor() // 💡 실시간 커서 위치 갱신
     lastSyncedContent = localText
-    isLocalUpdate = false // 🔓 로컬 업데이트 끝
+    isLocalUpdate = false
 }
 
 // --- EVENT HANDLERS ---
-
-editor.addEventListener('compositionstart', () => {
-    isComposing = true
-})
-
+editor.addEventListener('compositionstart', () => { isComposing = true })
 editor.addEventListener('compositionend', () => {
     isComposing = false
-    // ⚠️ 중요: 여기서 syncLocalToRemote()를 호출하지 마!
-    // compositionend 직후에 input 이벤트가 무조건 발생하므로 거기서 처리해야
-    // "글자 두 번 입력됨" 문제를 막을 수 있어.
+    // 💡 조합이 끝난 즉시 원격 변경사항이 반영되도록 유도 (필요한 경우)
+    updateDOMFromYjs()
 })
 
-editor.addEventListener('input', (e) => {
-    // 조합 중일 때는 Yjs에 반영하지 않음 (한글 깨짐 방지)
-    if (isComposing) return
-
+editor.addEventListener('input', () => {
     syncLocalToRemote()
-    updateRelativeCursor() // 입력 후 커서 위치 갱신
 })
 
-// 커서 이동 감지하여 상대적 위치 저장
 editor.addEventListener('mouseup', updateRelativeCursor)
 editor.addEventListener('keyup', (e) => {
-    // 화살표 키 등으로 이동했을 때 갱신
-    if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End' || e.key === 'PageUp' || e.key === 'PageDown') {
+    if (e.key.startsWith('Arrow') || ['Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
         updateRelativeCursor()
     }
 })
 document.addEventListener('selectionchange', () => {
-    // selectionchange는 너무 자주 발생하므로 포커스 확인 후 조심스럽게 사용하거나
-    // 필요한 이벤트들에서만 갱신
-    if (document.activeElement === editor) {
-        updateRelativeCursor()
-    }
+    if (document.activeElement === editor) updateRelativeCursor()
 })
 
-// Yjs 관찰자
+// 옵저버
 ytext.observe(event => {
-    // 내가 발생시킨 트랜잭션이면 무시 (무한루프 방지 핵심)
     if (event.transaction.origin === 'local-input') return
-
+    // 💡 한글 입력 중이면 원격 업데이트를 DOM에 바르지 않고 대기 (커서 밀림 방지)
+    if (isComposing) return
     updateDOMFromYjs()
 })
 
 // 초기 로딩
 lastSyncedContent = ytext.toString()
-editor.innerText = lastSyncedContent
+editor.textContent = lastSyncedContent
+renderLogs()
